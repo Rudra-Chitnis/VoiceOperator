@@ -3,6 +3,7 @@ mod context;
 mod executor;
 mod parser;
 mod registry;
+mod audio;
 
 use context::SessionContext;
 use std::io::{self, Write};
@@ -15,6 +16,7 @@ fn main() {
     let mut context = SessionContext::default();
 
     executor::print_help();
+    audio::list_input_devices();
 
     loop {
         print!("> ");
