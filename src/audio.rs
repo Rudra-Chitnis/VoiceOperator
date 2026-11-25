@@ -184,6 +184,16 @@ pub fn capture_audio(duration_seconds: u64) {
     stream_config.sample_rate,
     stream_config.channels,
 );
+
+let whisper_samples = prepare_whisper_audio(
+    &buffer,
+    stream_config.sample_rate,
+    stream_config.channels,
+);
+
+if !whisper_samples.is_empty() {
+    save_whisper_wav(&whisper_samples);
+}
 }
 
 fn save_wav(samples: &[f32], sample_rate: u32, channels: u16) {
@@ -225,3 +235,58 @@ fn save_wav(samples: &[f32], sample_rate: u32, channels: u16) {
     }
 }
 
+fn prepare_whisper_audio(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<f32> {
+    if sample_rate != 48_000 || channels != 2 {
+        println!("This conversion currently expects 48 kHz stereo audio.");
+        return Vec::new();
+    }
+
+    // Convert stereo audio into mono by averaging each pair.
+    let mono: Vec<f32> = samples
+        .chunks_exact(2)
+        .map(|frame| (frame[0] + frame[1]) / 2.0)
+        .collect();
+
+    // Convert 48 kHz to 16 kHz by keeping every third sample.
+    let resampled: Vec<f32> = mono
+        .iter()
+        .step_by(3)
+        .copied()
+        .collect();
+
+    resampled
+}
+
+fn save_whisper_wav(samples: &[f32]) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut writer = match hound::WavWriter::create(
+        "data/whisper_input.wav",
+        spec,
+    ) {
+        Ok(writer) => writer,
+        Err(error) => {
+            println!("Failed to create Whisper WAV: {error}");
+            return;
+        }
+    };
+
+    for sample in samples {
+        let converted = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+
+        if let Err(error) = writer.write_sample(converted) {
+            println!("Failed to write Whisper sample: {error}");
+            return;
+        }
+    }
+
+    match writer.finalize() {
+        Ok(()) => println!("Whisper-ready WAV saved: data/whisper_input.wav"),
+        Err(error) => println!("Failed to finalize Whisper WAV: {error}"),
+    }
+}
