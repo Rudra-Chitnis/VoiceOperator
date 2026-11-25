@@ -17,6 +17,7 @@ fn main() {
 
     executor::print_help();
     audio::list_input_devices();
+    audio::capture_audio(3);
 
     loop {
         print!("> ");
