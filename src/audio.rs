@@ -1,6 +1,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -176,6 +177,51 @@ pub fn capture_audio(duration_seconds: u64) {
         println!("Audio level is very low. Check your microphone.");
     } else {
         println!("Microphone audio appears to be captured!");
+    }
+
+    save_wav(
+    &buffer,
+    stream_config.sample_rate,
+    stream_config.channels,
+);
+}
+
+fn save_wav(samples: &[f32], sample_rate: u32, channels: u16) {
+    if let Err(error) = fs::create_dir_all("data") {
+        println!("Failed to create data directory: {error}");
+        return;
+    }
+
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut writer = match hound::WavWriter::create(
+        "data/test_recording.wav",
+        spec,
+    ) {
+        Ok(writer) => writer,
+        Err(error) => {
+            println!("Failed to create WAV file: {error}");
+            return;
+        }
+    };
+
+    for sample in samples {
+        let converted = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+
+        if let Err(error) = writer.write_sample(converted) {
+            println!("Failed to write audio sample: {error}");
+            return;
+        }
+    }
+
+    match writer.finalize() {
+        Ok(()) => println!("WAV file saved: data/test_recording.wav"),
+        Err(error) => println!("Failed to finalize WAV file: {error}"),
     }
 }
 
