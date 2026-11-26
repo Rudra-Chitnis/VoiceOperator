@@ -1,4 +1,3 @@
-
 mod commands;
 mod context;
 mod executor;
@@ -58,7 +57,7 @@ fn main() {
                 println!("\nRecognized speech: {transcript}");
 
                 if let Some(bridge) = bridge.as_mut() {
-                    match bridge.classify(&transcript) {
+                    match bridge.classify(&transcript, &app_catalog) {
                         Ok(Some(intent)) => {
                             println!("Executing approved intent...");
 
@@ -69,7 +68,7 @@ fn main() {
 
                         Ok(None) => {
                             println!(
-                                "Command rejected or no matching intent found."
+                                "Command rejected, unresolved, or ambiguous."
                             );
                         }
 
