@@ -4,6 +4,11 @@ pub enum Intent {
         application: Application,
     },
 
+    LaunchDiscoveredApp {
+        name: String,
+        target: String,
+    },
+
     OpenPath {
         path: String,
     },

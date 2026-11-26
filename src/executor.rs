@@ -1,3 +1,4 @@
+
 use crate::commands::{Application, Intent};
 use crate::context::SessionContext;
 use crate::registry::ACTION_REGISTRY;
@@ -16,6 +17,7 @@ pub fn print_help() {
     println!("  {:<22} Open a folder by path", "go to <path>");
     println!("  {:<22} Open a folder by path", "open <path>");
     println!("  {:<22} Open a folder by path", "open folder <path>");
+    println!("  {:<22} Launch a discovered application", "launch <app name>");
     println!();
 }
 
@@ -30,6 +32,33 @@ fn launch_application(application: Application) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch {executable}: {e}"))
+}
+
+fn launch_discovered_app(name: &str, target: &str) -> Result<(), String> {
+    let target_path = Path::new(target);
+
+    // Only permit executable targets for this milestone.
+    if let Some(extension) = target_path.extension() {
+        if !extension.to_string_lossy().eq_ignore_ascii_case("exe") {
+            return Err(format!(
+                "Refusing to launch non-executable target for {name}: {target}"
+            ));
+        }
+    } else {
+        return Err(format!(
+            "Target has no executable extension for {name}: {target}"
+        ));
+    }
+
+    // If this is an explicit filesystem path, ensure it exists.
+    if target_path.components().count() > 1 && !target_path.exists() {
+        return Err(format!("Application target does not exist: {target}"));
+    }
+
+    Command::new(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch {name} ({target}): {e}"))
 }
 
 pub fn execute_intent(
@@ -50,6 +79,16 @@ pub fn execute_intent(
                     println!("Launched {name}.");
                 }
 
+                Err(error) => println!("{error}"),
+            }
+        }
+
+        Intent::LaunchDiscoveredApp { name, target } => {
+            match launch_discovered_app(&name, &target) {
+                Ok(()) => {
+                    context.remember_application(name.clone());
+                    println!("Launched {name}.");
+                }
                 Err(error) => println!("{error}"),
             }
         }
