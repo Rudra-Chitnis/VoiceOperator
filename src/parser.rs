@@ -6,8 +6,11 @@ pub fn parse_command(input: &str) -> Option<Intent> {
     let trimmed = input.trim();
     let normalized = trimmed.to_lowercase();
 
+    // Remove sentence-ending punctuation for registered command matching.
+    let command_candidate = trimmed.trim_end_matches(['.', ',', '!', '?']);
+
     // First, check registered commands and aliases.
-    if let Some(spec) = find_action(trimmed) {
+    if let Some(spec) = find_action(command_candidate) {
         match spec.id {
             "open_notepad" => {
                 return Some(Intent::LaunchApplication {
