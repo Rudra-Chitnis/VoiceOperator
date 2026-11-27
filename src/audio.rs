@@ -3,8 +3,13 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use std::fs;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SILENCE_DURATION: Duration = Duration::from_millis(1800);
+const MAX_RECORDING_DURATION: Duration = Duration::from_secs(30);
+const STARTUP_GRACE: Duration = Duration::from_millis(800);
+const MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const SILENCE_THRESHOLD: f32 = 0.015;
 
 pub fn list_input_devices() {
     let host = cpal::default_host();
@@ -35,7 +40,11 @@ pub fn list_input_devices() {
     }
 }
 
-pub fn capture_audio(duration_seconds: u64) {
+pub fn capture_audio_until_silence() {
+    capture_audio_internal();
+}
+
+fn capture_audio_internal() {
     let host = cpal::default_host();
 
     let Some(device) = host.default_input_device() else {
@@ -63,60 +72,59 @@ pub fn capture_audio(duration_seconds: u64) {
         eprintln!("Audio stream error: {error}");
     };
 
-    let stream_result: Result<Stream, cpal::Error> =
-        match sample_format {
-            SampleFormat::F32 => {
-                device.build_input_stream(
-                    stream_config,
-                    move |data: &[f32], _| {
-                        if let Ok(mut buffer) = captured_samples.lock() {
-                            buffer.extend_from_slice(data);
-                        }
-                    },
-                    error_callback,
-                    None,
-                )
-            }
+    let stream_result: Result<Stream, cpal::Error> = match sample_format {
+        SampleFormat::F32 => {
+            device.build_input_stream(
+                stream_config,
+                move |data: &[f32], _| {
+                    if let Ok(mut buffer) = captured_samples.lock() {
+                        buffer.extend_from_slice(data);
+                    }
+                },
+                error_callback,
+                None,
+            )
+        }
 
-            SampleFormat::I16 => {
-                device.build_input_stream(
-                    stream_config,
-                    move |data: &[i16], _| {
-                        if let Ok(mut buffer) = captured_samples.lock() {
-                            buffer.extend(
-                                data.iter().map(|&sample| {
-                                    sample as f32 / 32768.0
-                                }),
-                            );
-                        }
-                    },
-                    error_callback,
-                    None,
-                )
-            }
+        SampleFormat::I16 => {
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i16], _| {
+                    if let Ok(mut buffer) = captured_samples.lock() {
+                        buffer.extend(
+                            data.iter().map(|&sample| {
+                                sample as f32 / 32768.0
+                            }),
+                        );
+                    }
+                },
+                error_callback,
+                None,
+            )
+        }
 
-            SampleFormat::U16 => {
-                device.build_input_stream(
-                    stream_config,
-                    move |data: &[u16], _| {
-                        if let Ok(mut buffer) = captured_samples.lock() {
-                            buffer.extend(
-                                data.iter().map(|&sample| {
-                                    (sample as f32 / 65535.0) * 2.0 - 1.0
-                                }),
-                            );
-                        }
-                    },
-                    error_callback,
-                    None,
-                )
-            }
+        SampleFormat::U16 => {
+            device.build_input_stream(
+                stream_config,
+                move |data: &[u16], _| {
+                    if let Ok(mut buffer) = captured_samples.lock() {
+                        buffer.extend(
+                            data.iter().map(|&sample| {
+                                (sample as f32 / 65535.0) * 2.0 - 1.0
+                            }),
+                        );
+                    }
+                },
+                error_callback,
+                None,
+            )
+        }
 
-            other => {
-                println!("Unsupported microphone sample format: {other:?}");
-                return;
-            }
-        };
+        other => {
+            println!("Unsupported microphone sample format: {other:?}");
+            return;
+        }
+    };
 
     let stream = match stream_result {
         Ok(stream) => stream,
@@ -131,12 +139,94 @@ pub fn capture_audio(duration_seconds: u64) {
         return;
     }
 
-    println!(
-        "\nRecording audio for {} seconds... Speak now!",
-        duration_seconds
-    );
+    println!("\nRecording started! Speak now.");
+    println!("Recording will stop automatically when silence is detected.");
 
-    thread::sleep(Duration::from_secs(duration_seconds));
+    let recording_start = Instant::now();
+    let mut silence_start: Option<Instant> = None;
+    let mut last_checked_samples = 0usize;
+
+    let samples_per_check =
+        (stream_config.sample_rate as usize
+            * stream_config.channels as usize
+            * MONITOR_INTERVAL.as_millis() as usize)
+            / 1000;
+
+    loop {
+        std::thread::sleep(MONITOR_INTERVAL);
+
+        let current_samples = match samples.lock() {
+            Ok(buffer) => buffer.len(),
+            Err(_) => {
+                println!("Audio buffer lock failed.");
+                return;
+            }
+        };
+
+        if recording_start.elapsed() >= MAX_RECORDING_DURATION {
+            println!("\nMaximum recording duration reached.");
+            break;
+        }
+
+        if recording_start.elapsed() < STARTUP_GRACE {
+            last_checked_samples = current_samples;
+            continue;
+        }
+
+        if current_samples <= last_checked_samples {
+            continue;
+        }
+
+        let new_samples = match samples.lock() {
+            Ok(buffer) => {
+                let start = last_checked_samples.min(buffer.len());
+                let end = buffer.len();
+
+                buffer[start..end].to_vec()
+            }
+            Err(_) => {
+                println!("Audio buffer lock failed.");
+                return;
+            }
+        };
+
+        last_checked_samples = current_samples;
+
+        if new_samples.is_empty() {
+            continue;
+        }
+
+        let rms = (new_samples
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>()
+            / new_samples.len() as f32)
+            .sqrt();
+
+        if rms < SILENCE_THRESHOLD {
+            match silence_start {
+                Some(start) => {
+                    if start.elapsed() >= SILENCE_DURATION {
+                        println!("\nSilence detected. Recording stopped.");
+                        break;
+                    }
+                }
+                None => {
+                    silence_start = Some(Instant::now());
+                }
+            }
+        } else {
+            silence_start = None;
+        }
+
+        let elapsed = recording_start.elapsed().as_secs();
+        println!(
+            "Recording... {} seconds | Audio level: {:.4}",
+            elapsed, rms
+        );
+
+        let _ = samples_per_check;
+    }
 
     drop(stream);
 
@@ -180,20 +270,20 @@ pub fn capture_audio(duration_seconds: u64) {
     }
 
     save_wav(
-    &buffer,
-    stream_config.sample_rate,
-    stream_config.channels,
-);
+        &buffer,
+        stream_config.sample_rate,
+        stream_config.channels,
+    );
 
-let whisper_samples = prepare_whisper_audio(
-    &buffer,
-    stream_config.sample_rate,
-    stream_config.channels,
-);
+    let whisper_samples = prepare_whisper_audio(
+        &buffer,
+        stream_config.sample_rate,
+        stream_config.channels,
+    );
 
-if !whisper_samples.is_empty() {
-    save_whisper_wav(&whisper_samples);
-}
+    if !whisper_samples.is_empty() {
+        save_whisper_wav(&whisper_samples);
+    }
 }
 
 fn save_wav(samples: &[f32], sample_rate: u32, channels: u16) {
@@ -235,26 +325,22 @@ fn save_wav(samples: &[f32], sample_rate: u32, channels: u16) {
     }
 }
 
-fn prepare_whisper_audio(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<f32> {
+fn prepare_whisper_audio(
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u16,
+) -> Vec<f32> {
     if sample_rate != 48_000 || channels != 2 {
         println!("This conversion currently expects 48 kHz stereo audio.");
         return Vec::new();
     }
 
-    // Convert stereo audio into mono by averaging each pair.
     let mono: Vec<f32> = samples
         .chunks_exact(2)
         .map(|frame| (frame[0] + frame[1]) / 2.0)
         .collect();
 
-    // Convert 48 kHz to 16 kHz by keeping every third sample.
-    let resampled: Vec<f32> = mono
-        .iter()
-        .step_by(3)
-        .copied()
-        .collect();
-
-    resampled
+    mono.iter().step_by(3).copied().collect()
 }
 
 fn save_whisper_wav(samples: &[f32]) {

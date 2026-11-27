@@ -47,48 +47,68 @@ fn main() {
         }
     };
 
-    // Existing voice command pipeline.
+    // Repeated voice command session.
     if bridge.is_some() {
         audio::list_input_devices();
-        audio::capture_audio(5);
+    }
 
-        match speech::transcribe_audio("data/whisper_input.wav") {
-            Ok(transcript) => {
-                println!("\nRecognized speech: {transcript}");
+    loop {
+        if bridge.is_some() {
+            println!("\n================================");
+            println!("Voice command session");
+            println!("================================");
 
-                if let Some(bridge) = bridge.as_mut() {
-                    match bridge.classify(&transcript, &app_catalog) {
-                        Ok(Some(intent)) => {
-                            println!("Executing approved intent...");
+            audio::capture_audio_until_silence();
 
-                            if !executor::execute_intent(intent, &mut context) {
-                                return;
+            match speech::transcribe_audio("data/whisper_input.wav") {
+                Ok(transcript) => {
+                    if transcript.trim().is_empty() {
+                        println!("No speech recognized.");
+                    } else {
+                        println!("\nRecognized speech: {transcript}");
+
+                        if let Some(bridge) = bridge.as_mut() {
+                            match bridge.classify(&transcript, &app_catalog) {
+                                Ok(Some(intent)) => {
+                                    println!("Executing approved intent...");
+
+                                    if !executor::execute_intent(
+                                        intent,
+                                        &mut context,
+                                    ) {
+                                        return;
+                                    }
+                                }
+
+                                Ok(None) => {
+                                    println!(
+                                        "Command rejected, unresolved, or ambiguous."
+                                    );
+                                }
+
+                                Err(error) => {
+                                    println!("Intent routing error: {error}");
+                                }
                             }
-                        }
-
-                        Ok(None) => {
-                            println!(
-                                "Command rejected, unresolved, or ambiguous."
-                            );
-                        }
-
-                        Err(error) => {
-                            println!("Intent routing error: {error}");
                         }
                     }
                 }
-            }
 
-            Err(error) => {
-                println!("\nTranscription error: {error}");
+                Err(error) => {
+                    println!("\nTranscription error: {error}");
+                }
             }
         }
-    }
 
-    // Typed command loop with dynamic application resolution.
-    loop {
+        // After a voice session, allow another voice command
+        // or a typed command.
+        println!("\nPress ENTER to record another voice command.");
+        println!("Or type a command, or type 'exit' to quit.");
+
         print!("> ");
-        io::stdout().flush().unwrap();
+        if io::stdout().flush().is_err() {
+            println!("Failed to flush output.");
+        }
 
         let mut input = String::new();
 
@@ -97,6 +117,16 @@ fn main() {
             continue;
         }
 
+        if input.trim().eq_ignore_ascii_case("exit") {
+            break;
+        }
+
+        // Empty input starts another voice session when available.
+        if input.trim().is_empty() && bridge.is_some() {
+            continue;
+        }
+
+        // Otherwise, treat the input as a typed command.
         match parser::parse_command(&input, &app_catalog) {
             Some(intent) => {
                 if !executor::execute_intent(intent, &mut context) {
